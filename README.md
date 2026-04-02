@@ -1,4 +1,4 @@
-# SlimNet — PyTorch Model Compression Library
+# SlimNet — PyTorch Model Compression Pipeline
 
 
 
