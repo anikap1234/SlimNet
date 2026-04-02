@@ -2,7 +2,7 @@
 BenchmarkReport and BenchmarkReporter — PRD §6.3
 """
 from __future__ import annotations
-import time, dataclasses
+import time, dataclasses, io, tempfile, os
 from typing import Optional
 import torch
 import torch.nn as nn
@@ -10,7 +10,6 @@ import torch.nn as nn
 
 @dataclasses.dataclass
 class BenchmarkReport:
-    """PRD §6.3 — full before/after comparison."""
     original_size_mb: float = 0.0
     compressed_size_mb: float = 0.0
     compression_ratio: float = 0.0
@@ -50,19 +49,28 @@ class BenchmarkReport:
 
 def _model_size_mb(model: nn.Module) -> float:
     """
-    Compute model size in MB, handling both regular and quantized models.
+    Accurate model size in MB that works for both regular and quantized models.
 
-    For quantized models (DynamicQuantizedLinear etc.), model.parameters()
-    may return an empty iterator — use state_dict tensors instead which
-    captures the actual int8 weight storage.
+    strategy: save to a real temp file and measure bytes on disk.
+    torch.save on a quantized model writes the actual packed int8 storage,
+    giving a true compressed size. state_dict() element_size() returns 1 byte
+    for int8 but nelement() is the logical count, not physical packed count,
+    causing the near-zero bug we saw.
     """
-    total_bytes = 0
-    for tensor in model.state_dict().values():
-         # Skip non-tensors (important for quantized models)
-        if not hasattr(tensor, "nelement"):
-            continue
-        total_bytes += tensor.nelement() * tensor.element_size()
-    return total_bytes / (1024 ** 2)
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pt') as f:
+            tmp_path = f.name
+        torch.save(model.state_dict(), tmp_path)
+        size_bytes = os.path.getsize(tmp_path)
+        os.unlink(tmp_path)
+        return size_bytes / (1024 ** 2)
+    except Exception:
+        # fallback: sum state_dict tensors
+        total = sum(
+            t.nelement() * t.element_size()
+            for t in model.state_dict().values()
+        )
+        return total / (1024 ** 2)
 
 
 def _measure_latency(
@@ -71,35 +79,27 @@ def _measure_latency(
     device: torch.device,
     n: int = 50,
 ) -> float:
-    """Mean inference latency in ms over n timed forward passes."""
+    """Mean inference latency in ms."""
     # Quantized models must stay on CPU
-    if device.type != "cpu":
-        try:
-            model = model.to(device)
-            inp = inp.to(device)
-        except Exception:
-            device = torch.device("cpu")
+    eval_device = torch.device("cpu")
+    model = model.to(eval_device).eval()
+    x = inp.to(eval_device)
 
-    model = model.to(device).eval()
-    x = inp.to(device)
-
-    # Cast input to match model dtype if needed
+    # cast input dtype if fp16/bf16
     try:
-        sample_param = next(iter(model.state_dict().values()))
-        if sample_param.dtype in (torch.float16, torch.bfloat16):
-            x = x.to(sample_param.dtype)
-    except StopIteration:
+        for v in model.state_dict().values():
+            if v.dtype in (torch.float16, torch.bfloat16):
+                x = x.to(v.dtype)
+            break
+    except Exception:
         pass
 
     with torch.no_grad():
-        for _ in range(5):       # warmup
+        for _ in range(5):
             try:
                 model(x)
             except Exception:
                 break
-
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
 
     times = []
     with torch.no_grad():
@@ -109,8 +109,6 @@ def _measure_latency(
                 model(x)
             except Exception:
                 break
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
             times.append((time.perf_counter() - t0) * 1000)
 
     return sum(times) / len(times) if times else 0.0
@@ -127,7 +125,6 @@ def _peak_vram_mb(model: nn.Module, inp: torch.Tensor, device: torch.device) -> 
 
 
 class BenchmarkReporter:
-    """Generates BenchmarkReport by comparing original vs compressed model."""
 
     def compare(
         self,
@@ -144,9 +141,9 @@ class BenchmarkReporter:
 
         orig_size = _model_size_mb(original_model)
         comp_size = _model_size_mb(compressed_model)
-        ratio = orig_size / comp_size if comp_size > 0 else 1.0
+        ratio     = orig_size / comp_size if comp_size > 0 else 1.0
 
-        orig_lat = _measure_latency(original_model, dummy_input, device, n_timed)
+        orig_lat = _measure_latency(original_model,  dummy_input, device, n_timed)
         comp_lat = _measure_latency(compressed_model, dummy_input, device, n_timed)
         speedup  = orig_lat / comp_lat if comp_lat > 0 else 1.0
 
@@ -182,13 +179,7 @@ class BenchmarkReporter:
         )
 
     @staticmethod
-    def _evaluate(
-        model: nn.Module,
-        loader: torch.utils.data.DataLoader,
-        device: torch.device,
-    ) -> float:
-        """Top-1 accuracy. Returns 0.0 if no labeled batches found."""
-        # Quantized models must run on CPU
+    def _evaluate(model: nn.Module, loader, device: torch.device) -> float:
         eval_device = torch.device("cpu")
         model = model.to(eval_device).eval()
         correct = total = 0

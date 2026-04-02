@@ -19,7 +19,6 @@ class QuantizationModule:
         qm = QuantizationModule()
         compressed, info = qm.apply(model, config, dummy_input, calibration_loader)
     """
-
     def apply(
         self,
         model: nn.Module,
@@ -31,6 +30,14 @@ class QuantizationModule:
         Apply quantization. Returns (quantized_model, info_dict).
         Never modifies original model — works on a deep copy.
         """
+        # Ensure model is on CPU (dynamic quantization requires CPU backend)
+        try:
+            if next(model.parameters()).is_cuda:
+                model = model.cpu()
+        except StopIteration:
+         pass
+        if dummy_input is not None:
+            dummy_input = dummy_input.cpu()
         mode = config.mode
         logger.info(f"[Quantization] mode={mode}")
         model_copy = copy.deepcopy(model).cpu().eval()
