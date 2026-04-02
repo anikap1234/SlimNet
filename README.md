@@ -1,6 +1,6 @@
 # SlimNet — PyTorch Model Compression Library
 
-> Compress any PyTorch model to run on cheap hardware. One function call. No ML expertise required.
+
 
 [![Python](https://img.shields.io/badge/python-3.9%20|%203.10%20|%203.11%20|%203.12-blue)]()
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)]()
@@ -54,6 +54,8 @@ Original Model
 ---
 
 ## Benchmark Results
+
+
 
 | Model | Original | Compressed | Speedup | Accuracy Drop | Device |
 |-------|----------|------------|---------|---------------|--------|
