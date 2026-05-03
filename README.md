@@ -263,8 +263,6 @@ slimnet/
 │   └── test_pipeline.py         # 15 tests — end-to-end integration
 ├── examples/
 │   ├── resnet50_t4.py           # ResNet-50 → T4: 100MB → 18MB, 4.2× speedup
-│   ├── bert_cpu.py              # BERT-base → CPU: 440MB → 65MB, 3.8× speedup
-│   └── whisper_macbook.py       # Whisper Large → MacBook M2
 └── run_full.py                  # End-to-end smoke test
 ```
 
